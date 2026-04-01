@@ -48,89 +48,103 @@ class SimulationThread(QThread):
         while self.running:
             round_num += 1
             
-            # ===== 反侦察延迟 =====
-            delay = random.uniform(1.5, 4.0)
-            time.sleep(delay)
+            self._apply_delay()
             
             if not self.running:
                 break
             
-            # ===== 模拟获取数据: 神仙猿 (开奖结果) =====
-            current_ape = random.randint(1, 8)
-            
-            # ===== 算法计算 =====
-            algo_results = AlgorithmLab.calculate_all(self.history)
-            
-            # ===== AI 投票 =====
-            for persona in self.personas.values():
-                persona.get_vote(algo_results)
-            
-            # ===== 仲裁决策 =====
-            final_prediction = self.arbiter.decide(self.personas, algo_results)
-            
-            # ===== 策略决策 =====
-            decision = self.engine.get_decision()
-            
-            # ===== 结算 =====
-            # 判断是否躲避成功 (预测位置 != 神仙猿位置)
-            is_win = (final_prediction is not None and final_prediction != current_ape)
-            
-            # 更新策略引擎
-            message, profit = self.engine.update_result(is_win, decision.amount)
-            
-            # 更新 AI 权重 (只有在有有效预测时)
-            if final_prediction is not None:
-                for persona in self.personas.values():
-                    if persona.get_vote(algo_results) == final_prediction:
-                        persona.update_score(is_win)
-            
-            # 记录历史
-            self.history.insert(0, current_ape)
-            if len(self.history) > 200:
-                self.history = self.history[:200]
-            
-            # ===== 构建 UI 更新数据 =====
-            stats = self.engine.get_stats()
-            
-            ui_data = {
-                'status': stats['status'],
-                'balance': stats['balance'],
-                'ai_votes': {
-                    name: {
-                        'vote': persona.get_vote(algo_results),
-                        'confidence': persona.confidence,
-                        'ema': persona.ema_score
-                    }
-                    for name, persona in self.personas.items()
-                },
-                'arbiter_decision': final_prediction,
-                'avoid': final_prediction,
-                'killer': current_ape,
-                'message': f"[第{round_num}轮] {decision.message} | {message}",
-                'record': {
-                    'time': datetime.now().strftime("%H:%M:%S"),
-                    'ape': current_ape,
-                    'avoid': final_prediction,
-                    'is_win': is_win,
-                    'status': stats['status'],
-                    'profit': profit
-                },
-                'stats': {
-                    'total': stats['total_rounds'],
-                    'wins': stats['wins'],
-                    'losses': stats['losses']
-                }
-            }
-            
-            # 发送更新信号
+            current_ape = self._get_current_ape()
+            algo_results = self._run_algorithms()
+            self._ai_vote(algo_results)
+            final_prediction = self._arbitrate(algo_results)
+            decision = self._get_strategy_decision()
+            is_win, message, profit, stats = self._settle_round(current_ape, final_prediction, decision, algo_results)
+            ui_data = self._build_ui_data(round_num, current_ape, final_prediction, decision, message, profit, stats, algo_results, is_win)
             self.update_signal.emit(ui_data)
-            
-            # 日志输出
-            result_icon = "✅" if is_win else "❌"
-            ape_name = YAO_MAP.get(current_ape, "未知")
-            avoid_name = YAO_MAP.get(final_prediction, "无") if final_prediction else "弃权"
-            print(f"[{round_num:03d}] {result_icon} 神仙猿:{current_ape}{ape_name} | "
-                  f"躲避:{avoid_name} | {decision.status} | 余额:{stats['balance']:,}")
+            self._log_result(round_num, current_ape, final_prediction, decision, stats, is_win)
+    
+    def _apply_delay(self):
+        """反侦察延迟"""
+        delay = random.uniform(1.5, 4.0)
+        time.sleep(delay)
+    
+    def _get_current_ape(self):
+        """模拟获取数据: 神仙猿 (开奖结果)"""
+        return random.randint(1, 8)
+    
+    def _run_algorithms(self):
+        """算法计算"""
+        return AlgorithmLab.calculate_all(self.history)
+    
+    def _ai_vote(self, algo_results):
+        """AI 投票"""
+        for persona in self.personas.values():
+            persona.get_vote(algo_results)
+    
+    def _arbitrate(self, algo_results):
+        """仲裁决策"""
+        return self.arbiter.decide(self.personas, algo_results)
+    
+    def _get_strategy_decision(self):
+        """策略决策"""
+        return self.engine.get_decision()
+    
+    def _settle_round(self, current_ape, final_prediction, decision, algo_results):
+        """结算"""
+        is_win = (final_prediction is not None and final_prediction != current_ape)
+        message, profit = self.engine.update_result(is_win, decision.amount)
+        
+        if final_prediction is not None:
+            for persona in self.personas.values():
+                if persona.get_vote(algo_results) == final_prediction:
+                    persona.update_score(is_win)
+        
+        self.history.insert(0, current_ape)
+        if len(self.history) > 200:
+            self.history = self.history[:200]
+        
+        stats = self.engine.get_stats()
+        return is_win, message, profit, stats
+    
+    def _build_ui_data(self, round_num, current_ape, final_prediction, decision, message, profit, stats, algo_results, is_win):
+        """构建 UI 更新数据"""
+        return {
+            'status': stats['status'],
+            'balance': stats['balance'],
+            'ai_votes': {
+                name: {
+                    'vote': persona.get_vote(algo_results),
+                    'confidence': persona.confidence,
+                    'ema': persona.ema_score
+                }
+                for name, persona in self.personas.items()
+            },
+            'arbiter_decision': final_prediction,
+            'avoid': final_prediction,
+            'killer': current_ape,
+            'message': f"[第{round_num}轮] {decision.message} | {message}",
+            'record': {
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'ape': current_ape,
+                'avoid': final_prediction,
+                'is_win': is_win,
+                'status': stats['status'],
+                'profit': profit
+            },
+            'stats': {
+                'total': stats['total_rounds'],
+                'wins': stats['wins'],
+                'losses': stats['losses']
+            }
+        }
+    
+    def _log_result(self, round_num, current_ape, final_prediction, decision, stats, is_win):
+        """日志输出"""
+        result_icon = "✅" if is_win else "❌"
+        ape_name = YAO_MAP.get(current_ape, "未知")
+        avoid_name = YAO_MAP.get(final_prediction, "无") if final_prediction else "弃权"
+        print(f"[{round_num:03d}] {result_icon} 神仙猿:{current_ape}{ape_name} | "
+              f"躲避:{avoid_name} | {decision.status} | 余额:{stats['balance']:,}")
     
     def stop(self):
         """停止循环"""
